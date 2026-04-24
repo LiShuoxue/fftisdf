@@ -6,7 +6,7 @@ import fft
 
 def setup(test_obj, cell=None, basis="gth-dzvp", ke_cutoff=40.0, 
           kmesh=None, tol=1e-6, wrap_around=True, output=None, 
-          cisdf=20.0, verbose=5):
+          cisdf=20.0, verbose=5, **kwargs):
     if kmesh is None:
         kmesh = [2, 2, 2]
 
@@ -79,7 +79,7 @@ def main(kwargs):
     from fft.test.test_vjk_kpt import VjkKptTest
     test_obj = VjkKptTest()
     setup(test_obj, **kwargs)
-    
+    breakpoint()
     from fft.test.test_vjk_kpt import krhf_vjk_kpt
     from fft.test.test_vjk_kpt import kuhf_vjk_kpt
     krhf_vjk_kpt(test_obj)

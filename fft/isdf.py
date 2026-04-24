@@ -200,7 +200,7 @@ def select_interpolating_points(df_obj, cisdf=None):
 
 class InterpolativeSeparableDensityFitting(FFTDF):
     tol = 1e-8
-    _keys = {"tol", "kconserv2", "kconserv3"}
+    _keys = {"tol", "kconserv2", "kconserv3", "_isdf_to_save", '_isdf'}
 
     def __init__(self, cell, kpts=numpy.zeros((1, 3))):
         FFTDF.__init__(self, cell, kpts)
