@@ -2,7 +2,7 @@ import os, sys, h5py
 import numpy, scipy
 from scipy.linalg import svd
 
-# Shuoxue NOTE : Profilers
+# Shuoxue NOTE : Import the profilers.
 import cProfile
 from memory_profiler import profile as mem_prof
 
@@ -63,16 +63,18 @@ def contract(f_kpt, g_kpt, phase):
 
     # [2] kspace->supercell transform
     t_spc = kpt_to_spc(t_kpt, phase)
+    t_kpt = None
 
     # [3] Element-wise square
     x_spc = t_spc * t_spc
+    t_spc = None
 
     # [4] supercell->kspace transform
     x_kpt = spc_to_kpt(x_spc, phase)
+    x_spc = None
     return x_kpt
 
 
-@mem_prof
 def lstsq(a, b, tol=1e-10):
     r"""
     Solve the Hermitian sandwich least-squares problem using SVD.
@@ -283,7 +285,8 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         eta_kpt = None
         fswap = self._fswap
 
-        shape = (nkpt * nip, ngrid)
+        # shape = (nkpt * nip, ngrid)
+        shape = (ngrid, nkpt * nip)  # NOTE tp order
         dtype = numpy.complex128
 
         mypf = cProfile.Profile()
@@ -315,7 +318,10 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             eta_kpt_g0g1 = contract(inpv_kpt, ao_kpt, phase)
             eta_kpt_g0g1 = eta_kpt_g0g1.reshape(nkpt * nip, g1 - g0)
 
-            eta_kpt[:, g0:g1] = eta_kpt_g0g1
+            # from easyemb.backend.ops import index
+            # eta_kpt.__setitem__(index[g0:g1, :], eta_kpt_g0g1.T)
+            eta_kpt[g0:g1, :] = eta_kpt_g0g1.T  # NOTE tp order
+            # eta_kpt[:, g0:g1] = eta_kpt_g0g1
             eta_kpt_g0g1 = None
 
             log.timer(info % (g0, g1), *t0)
@@ -357,14 +363,16 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             fq = numpy.exp(-1j * coord @ kpts[q])
             vq = pbctools.get_coulG(cell, k=kpts[q], exx=False, Gv=v0, mesh=mesh)
             vq *= cell.vol / ngrid
-            lq = eta_kpt[q0:q1, :] * fq
+            # lq = eta_kpt[q0:q1, :] * fq
+            lq = eta_kpt[:, q0:q1].T * fq  # NOTE tp order
 
             wq = pbctools.fft(lq, mesh)
             rq = pbctools.ifft(wq * vq, mesh)
+            wq = None
             rq = rq.conj()
 
             kern_q = lib.dot(lq, rq.T) / numpy.sqrt(ngrid)
-            lq = rq = wq = None
+            lq = rq = None
 
             metx_q = metx_kpt[q]
             res = lstsq(metx_q, kern_q, tol=tol)
