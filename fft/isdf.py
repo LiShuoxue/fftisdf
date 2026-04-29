@@ -383,8 +383,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             elif self.outcore_file_option == "C":
                 lq = eta_kpt[q0:q1, :] * fq
             elif self.outcore_file_option == "chunk":
-                lq = eta_kpt[q0:q1, :ngrid] * fq
-                # lq = lq[:, :ngrid]  # remove the padding part
+                lq = eta_kpt[q0:q1, :ngrid] * fq  # NOTE remove the padding part
 
             wq = pbctools.fft(lq, mesh)
             rq = pbctools.ifft(wq * vq, mesh)
