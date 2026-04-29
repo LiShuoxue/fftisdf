@@ -6,6 +6,7 @@ import scipy.linalg
 from scipy.linalg import svd
 
 import pyscf
+import cProfile
 
 
 # pyscf.lib
@@ -276,6 +277,9 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         shape = (nkpt * nip, ngrid)
         dtype = numpy.complex128
 
+        mypf = cProfile.Profile()
+        mypf.enable()
+
         if fswap is None:
             log.debug("\nIn-core version is used for eta_kpt.")
             log.debug("shape = %s", shape)
@@ -291,7 +295,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             log.debug("approximate memory needed for each k-point: %6.2e GB", nip * ngrid * 16 / 1e9)
             log.debug("max_memory: %6.2e GB", max_memory / 1e3)
             eta_kpt = fswap.create_dataset("eta_kpt", shape=shape, dtype=dtype)
-        
+
         log.debug("\nComputing eta_kpt")
         info = (lambda s: f"eta_kpt[ %{len(s)}d: %{len(s)}d]")(str(ngrid))
         block_loop = self.gen_block_loop(blksize=blksize)
@@ -306,6 +310,9 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             eta_kpt_g0g1 = None
 
             log.timer(info % (g0, g1), *t0)
+
+        mypf.disable()
+        mypf.dump_stats("build_eta_kpt.prof")
 
         return eta_kpt
 
