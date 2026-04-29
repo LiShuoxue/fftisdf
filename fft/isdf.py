@@ -34,9 +34,6 @@ CONTRACT_MAX_SIZE = getattr(__config__, "fftisdf_contract_max_size", 20000)
 # Naming convention:
 # *_kpt: k-space array, which shapes as (nkpt, x, x)
 # *_spc: super-cell stripe array, which shapes as (nspc, x, x)
-
-
-@mem_prof
 def contract(f_kpt, g_kpt, phase):
     r"""Contract two k-space arrays with the following steps:
         [1] Matrix multiplication:       T_{ml}^k = \sum_n F_{mn}^k* G_{ln}^k
@@ -210,9 +207,16 @@ def select_interpolating_points(df_obj, cisdf=None):
 
 class InterpolativeSeparableDensityFitting(FFTDF):
     tol = 1e-8
-    _keys = {"tol", "kconserv2", "kconserv3", "_isdf_to_save", '_isdf'}
+    _keys = {"tol", "kconserv2", "kconserv3", "_isdf_to_save", '_isdf', "outcore_file_option"}
 
     def __init__(self, cell, kpts=numpy.zeros((1, 3))):
+        """
+        Attrs:  # (Shuoxue NOTE)
+            outcore_file_option: debugging test of the type of fswap storage.
+                'C': alike Contiguous array, shape (nkpt * nip, ngrid)
+                'F': alike Fortran-ordered array, shape (ngrid, nkpt * nip)
+                'chunk': use dataset chunking in h5py.
+        """
         FFTDF.__init__(self, cell, kpts)
 
         kconserv = get_kconserv(cell, kpts)
@@ -226,6 +230,8 @@ class InterpolativeSeparableDensityFitting(FFTDF):
 
         self._coul_kpt = None
         self._inpv_kpt = None
+
+        self.outcore_file_option = 'chunk'
 
     get_eri = isdf_ao2mo.get_ao_eri
     get_ao_eri = isdf_ao2mo.get_ao_eri
@@ -285,8 +291,11 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         eta_kpt = None
         fswap = self._fswap
 
-        # shape = (nkpt * nip, ngrid)
-        shape = (ngrid, nkpt * nip)  # NOTE tp order
+        shape = {
+            'C': (nkpt * nip, ngrid),
+            'F': (ngrid, nkpt * nip),
+            "chunk": (nkpt * nip, int(numpy.ceil(ngrid / blksize) * blksize)),
+        }[self.outcore_file_option]
         dtype = numpy.complex128
 
         mypf = cProfile.Profile()
@@ -306,7 +315,10 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             log.debug("approximate memory needed for each block:   %6.2e GB", nkpt * nip * 16 * blksize / 1e9)
             log.debug("approximate memory needed for each k-point: %6.2e GB", nip * ngrid * 16 / 1e9)
             log.debug("max_memory: %6.2e GB", max_memory / 1e3)
-            eta_kpt = fswap.create_dataset("eta_kpt", shape=shape, dtype=dtype)
+            if self.outcore_file_option == "chunk":
+                eta_kpt = fswap.create_dataset("eta_kpt", shape=shape, dtype=dtype, chunks=(nip, blksize))
+            else:
+                eta_kpt = fswap.create_dataset("eta_kpt", shape=shape, dtype=dtype)
 
         log.debug("\nComputing eta_kpt")
         info = (lambda s: f"eta_kpt[ %{len(s)}d: %{len(s)}d]")(str(ngrid))
@@ -320,8 +332,10 @@ class InterpolativeSeparableDensityFitting(FFTDF):
 
             # from easyemb.backend.ops import index
             # eta_kpt.__setitem__(index[g0:g1, :], eta_kpt_g0g1.T)
-            eta_kpt[g0:g1, :] = eta_kpt_g0g1.T  # NOTE tp order
-            # eta_kpt[:, g0:g1] = eta_kpt_g0g1
+            if self.outcore_file_option == "F":
+                eta_kpt[g0:g1, :] = eta_kpt_g0g1.T  # NOTE tp order
+            else:
+                eta_kpt[:, g0:g1] = eta_kpt_g0g1
             eta_kpt_g0g1 = None
 
             log.timer(info % (g0, g1), *t0)
@@ -363,8 +377,14 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             fq = numpy.exp(-1j * coord @ kpts[q])
             vq = pbctools.get_coulG(cell, k=kpts[q], exx=False, Gv=v0, mesh=mesh)
             vq *= cell.vol / ngrid
-            # lq = eta_kpt[q0:q1, :] * fq
-            lq = eta_kpt[:, q0:q1].T * fq  # NOTE tp order
+
+            if self.outcore_file_option == "F":
+                lq = eta_kpt[:, q0:q1].T * fq  # NOTE tp order
+            elif self.outcore_file_option == "C":
+                lq = eta_kpt[q0:q1, :] * fq
+            elif self.outcore_file_option == "chunk":
+                lq = eta_kpt[q0:q1, :ngrid] * fq
+                # lq = lq[:, :ngrid]  # remove the padding part
 
             wq = pbctools.fft(lq, mesh)
             rq = pbctools.ifft(wq * vq, mesh)
@@ -571,6 +591,7 @@ if __name__ == "__main__":
         scf_obj.with_df.verbose = 10
 
         df_obj = scf_obj.with_df
+        df_obj.outcore_file_option = 'C'  # 'C', 'F', 'chunk'
         df_obj.build(cisdf=c0)
 
         scf_obj.kernel(dm_kpts)
