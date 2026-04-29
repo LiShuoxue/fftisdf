@@ -1,13 +1,12 @@
 import os, sys, h5py
-from functools import reduce
-
 import numpy, scipy
-import scipy.linalg
 from scipy.linalg import svd
 
-import pyscf
+# Shuoxue NOTE : Profilers
 import cProfile
+from memory_profiler import profile as mem_prof
 
+import pyscf
 
 # pyscf.lib
 from pyscf import lib
@@ -36,18 +35,20 @@ CONTRACT_MAX_SIZE = getattr(__config__, "fftisdf_contract_max_size", 20000)
 # *_kpt: k-space array, which shapes as (nkpt, x, x)
 # *_spc: super-cell stripe array, which shapes as (nspc, x, x)
 
+
+@mem_prof
 def contract(f_kpt, g_kpt, phase):
     r"""Contract two k-space arrays with the following steps:
         [1] Matrix multiplication:       T_{ml}^k = \sum_n F_{mn}^k* G_{ln}^k
         [2] kspace->supercell transform. T_{ml}^s <- T_{ml}^k
         [3] Element-wise square:         X_{ml}^s = T_{ml}^s T_{ml}^s
         [4] supercell->kspace transform. X_{ml}^k <- X_{ml}^s
-    
+
     Args:
         f_kpt (ndarray): First k-space array, shape (k, m, n)
-        g_kpt (ndarray): Second k-space array, shape (k, l, n)  
+        g_kpt (ndarray): Second k-space array, shape (k, l, n)
         phase (ndarray): Phase factors for k-space transforms
-        
+
     Returns:
         ndarray: Contracted result in k-space, shape (k, m, l)
     """
@@ -70,6 +71,8 @@ def contract(f_kpt, g_kpt, phase):
     x_kpt = spc_to_kpt(x_spc, phase)
     return x_kpt
 
+
+@mem_prof
 def lstsq(a, b, tol=1e-10):
     r"""
     Solve the Hermitian sandwich least-squares problem using SVD.
@@ -85,7 +88,7 @@ def lstsq(a, b, tol=1e-10):
     # [1] SVD of A
     u, s, vh = svd(a, full_matrices=False)
 
-    # [2] Compute R[i, j] = 1 / S[i] * S[j] 
+    # [2] Compute R[i, j] = 1 / S[i] * S[j]
     # if S[i] * S[j] > tol, otherwise 0
     r = s[None, :] * s[:, None]
     m = abs(r) > tol * tol
@@ -95,13 +98,14 @@ def lstsq(a, b, tol=1e-10):
     uh = u.conj().T
     t = lib.dot(uh, bu)
     t[m] /= r[m]
-    
+
     # [4] Compute X = V dot T dot Vh
     v = vh.conj().T
     vt = lib.dot(v, t)
     x = lib.dot(vt, vh)
 
     return x, numpy.sum(s > tol)
+
 
 def compute_blksize(ntot, nmax=2000, chunk=BLKSIZE):
     """Participate the grid into slices. Output an integer
@@ -118,6 +122,7 @@ def compute_blksize(ntot, nmax=2000, chunk=BLKSIZE):
     blksize = min(blksize, blksize_max)
     return blksize
 
+
 def compute_metx(f_kpt):
     """This is a helper function to compute the metric
     tensor in the reference cell. Equivalent to the following
@@ -132,10 +137,11 @@ def compute_metx(f_kpt):
     metx = metx * metx.conj()
     return metx.real / nk
 
+
 def select_interpolating_points(df_obj, cisdf=None):
     log = logger.new_logger(df_obj, df_obj.verbose)
     t0 = (process_clock(), perf_counter())
-    
+
     cell = df_obj.cell
     nao = cell.nao_nr()
     grids = df_obj.grids
@@ -160,7 +166,7 @@ def select_interpolating_points(df_obj, cisdf=None):
         info = (lambda s: f"Cholesky decomposition for grids [%{len(s)+1}d, %{len(s)+1}d]")(str(ngrid))
         block_loop = df_obj.gen_block_loop(blksize=blksize)
     
-        weight = numpy.zeros(ngrid)        
+        weight = numpy.zeros(ngrid)
         for ao_etc_kpt, g0, g1 in block_loop:
             ao_g0g1_kpt = numpy.asarray(ao_etc_kpt[0], dtype=numpy.complex128)
 
@@ -173,7 +179,7 @@ def select_interpolating_points(df_obj, cisdf=None):
         ix = numpy.argsort(weight)[-CHOLESKY_MAX_SIZE:]
         ix = ix[weight[ix] > CHOLESKY_TOL]
         ix = numpy.sort(ix)
-    
+
     coord = grids.coords[ix]
     phi_kpt = cell.pbc_eval_gto("GTOval", coord, kpts=kpts)
     phi_kpt = numpy.asarray(phi_kpt, dtype=numpy.complex128)
@@ -198,6 +204,7 @@ def select_interpolating_points(df_obj, cisdf=None):
     log.timer("selecting interpolating points", *t0)
     mask = perm[:nip]
     return coord[mask]
+
 
 class InterpolativeSeparableDensityFitting(FFTDF):
     tol = 1e-8
@@ -226,7 +233,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
 
     def dump_flags(self, verbose=None):
         log = logger.new_logger(self, verbose)
-        
+
         log.info("\n")
         log.info("******** %s ********", self.__class__)
         log.info("mesh = %s (%d PWs)", self.mesh, numpy.prod(self.mesh))
@@ -245,6 +252,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             log.info("isdf_to_save = %s", self._isdf_to_save)
         return self
 
+    @mem_prof
     def build_inpv_kpt(self, cisdf=10.0):
         cell = self.cell
         kpts = self.kpts
@@ -253,9 +261,10 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         inpv_kpt = numpy.asarray(inpv_kpt, dtype=numpy.complex128)
         return inpv_kpt
 
+    @mem_prof
     def build_eta_kpt(self, inpv_kpt):
         log = logger.new_logger(self, self.verbose)
-        max_memory = max(2000, self.max_memory - current_memory()[0]) # in MB
+        max_memory = max(2000, self.max_memory - current_memory()[0])  # in MB
 
         cell = self.cell
         kpts = self.kpts
@@ -264,13 +273,13 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         grids = self.grids
         ngrid = grids.coords.shape[0]
         nkpt, nip, nao = inpv_kpt.shape
-        
+
         blksize_max = max_memory * 1e6
         blksize_max = int(blksize_max * 0.2) // (nkpt * nip * 16)
         blksize_max = max(BLKSIZE, blksize_max)
         blksize_max = min(CONTRACT_MAX_SIZE, blksize_max)
         blksize = compute_blksize(ngrid, blksize_max, BLKSIZE)
-        
+
         eta_kpt = None
         fswap = self._fswap
 
@@ -312,10 +321,11 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             log.timer(info % (g0, g1), *t0)
 
         mypf.disable()
-        mypf.dump_stats("build_eta_kpt.prof")
+        mypf.dump_stats("build_eta_kpt_time.prof")
 
         return eta_kpt
 
+    @mem_prof
     def build_coul_kpt(self, inpv_kpt, eta_kpt):
         log = logger.new_logger(self, self.verbose)
         tol = self.tol
@@ -326,10 +336,13 @@ class InterpolativeSeparableDensityFitting(FFTDF):
 
         mesh = cell.mesh
         v0 = cell.get_Gv(mesh)
-        
+
         grids = self.grids
         coord = grids.coords
         ngrid = coord.shape[0]
+
+        mypf = cProfile.Profile()
+        mypf.enable()
 
         nkpt, nip, nao = inpv_kpt.shape
         metx_kpt = contract(inpv_kpt, inpv_kpt, phase)
@@ -340,7 +353,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         for q in range(nkpt):
             t0 = (process_clock(), perf_counter())
             q0, q1 = q * nip, (q + 1) * nip
-            
+
             fq = numpy.exp(-1j * coord @ kpts[q])
             vq = pbctools.get_coulG(cell, k=kpts[q], exx=False, Gv=v0, mesh=mesh)
             vq *= cell.vol / ngrid
@@ -361,14 +374,17 @@ class InterpolativeSeparableDensityFitting(FFTDF):
                 err = metx_q @ coul_q @ metx_q - kern_q
                 err = abs(err).max() / abs(kern_q).max()
                 log.debug("\nMetric tensor rank: %d / %d, lstsq error: %6.2e", res[1], nip, err)
-                
+
             coul_kpt[q] = coul_q * numpy.sqrt(ngrid)
             coul_q = None
 
             log.timer(info % (q + 1), *t0)
 
+        mypf.disable()
+        mypf.dump_stats("build_coul_kpt_time.prof")
+
         return coul_kpt
-    
+
     @property
     def inpv_kpt(self):
         if self._inpv_kpt is None:
@@ -376,7 +392,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
                 self._inpv_kpt = load(self._isdf, "inpv_kpt")
         assert self._inpv_kpt is not None
         return self._inpv_kpt
-    
+
     @property
     def coul_kpt(self):
         if self._coul_kpt is None:
@@ -399,7 +415,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             self._inpv_kpt = inpv_kpt
             self._coul_kpt = coul_kpt
             return inpv_kpt, coul_kpt
-        
+
         self.check_sanity()
 
         # [Step 1]: compute the interpolating functions
@@ -412,7 +428,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             self._inpv_kpt = inpv_kpt
 
         self.dump_flags()
-        
+
         # [Step 2]: compute the right-hand side of the least-square fitting
         # eta_kpt is a (ngrid, nip, nkpt) array
         t0 = (process_clock(), perf_counter())
@@ -429,7 +445,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         self._inpv_kpt = inpv_kpt
         self._coul_kpt = coul_kpt
         self._finalize()
-    
+
     def _finalize(self):
         log = logger.new_logger(self, self.verbose)
 
@@ -440,7 +456,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
 
             if os.path.exists(fswap):
                 os.remove(fswap)
-            
+
             assert not os.path.exists(fswap)
             log.debug("Successfully removed swap file %s", fswap)
 
@@ -463,7 +479,7 @@ class InterpolativeSeparableDensityFitting(FFTDF):
 
         cell = grids.cell
         assert cell.dimension == 3
-        
+
         kpts = self.kpts
         if not isinstance(kpts, numpy.ndarray):
             kpts = kpts.kpts
@@ -477,17 +493,17 @@ class InterpolativeSeparableDensityFitting(FFTDF):
             assert blksize % BLKSIZE == 0
 
         block_loop = ni.block_loop(
-            cell, grids, nao, deriv, 
-            kpts, blksize=blksize, 
+            cell, grids, nao, deriv,
+            kpts, blksize=blksize,
             max_memory=max_memory,
             )
-        
+
         g0 = g1 = 0
         for ao_etc_kpt in block_loop:
             g0 = g1
             g1 += ao_etc_kpt[4].shape[0]
             yield ao_etc_kpt, g0, g1
-    
+
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
                with_j=True, with_k=True, omega=None, exxdiv=None):
 
@@ -505,14 +521,16 @@ class InterpolativeSeparableDensityFitting(FFTDF):
 
         return vj, vk
 
+
 ISDF = FFTISDF = InterpolativeSeparableDensityFitting
 
+
 if __name__ == "__main__":
-    a = 1.7834 # unit Angstrom
+    a = 1.7834  # unit Angstrom
     lv = a * (numpy.ones((3, 3)) - numpy.eye(3))
 
-    atom  = [['C', (0.0000, 0.0000, 0.0000)]]
-    atom += [['C', ( a / 2,  a / 2,  a / 2)]]
+    atom = [['C', (0.0000, 0.0000, 0.0000)]]
+    atom += [['C', (a / 2,  a / 2,  a / 2)]]
 
     from pyscf.pbc import gto
     cell = gto.Cell()
